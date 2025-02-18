@@ -6,6 +6,7 @@ ytSALT (YouTube Salt) is an AI-powered tool for optimizing YouTube video metadat
 ## Features
 - Video metadata extraction
 - Transcript analysis
+- Thumbnail analysis
 - AI-powered optimization for:
   - Video titles
   - Video descriptions
@@ -18,9 +19,11 @@ ytSALT (YouTube Salt) is an AI-powered tool for optimizing YouTube video metadat
 ### Backend
 - Python 3.x
 - Flask
-- OpenAI GPT-4
+- OpenAI GPT-4o, GPT-4o-mini (for image analysis)
 - yt-dlp
 - youtube-transcript-api
+- Pillow
+- requests
 
 ### Frontend
 - React
@@ -63,11 +66,12 @@ npm run dev
 ```
 
 ## Current status
-- Implemented core optimization features
+- Implemented core optimization features for titles and descriptions
+- Tag optimization with transcript analysis
+- Thumbnail optimization recommendations
+- Timestamp/chapter suggestions
+
 - Working on enhanced optimization features:
-  - Tag optimization with transcript analysis
-  - Thumbnail optimization recommendations
-  - Timestamp/chapter suggestions
   - Keyword research integration
 
 ## Development roadmap
