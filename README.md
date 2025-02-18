@@ -27,12 +27,15 @@ ytSALT (YouTube Salt) is an AI-powered tool for optimizing YouTube video metadat
 - Tailwind CSS
 - Axios
 - Vite
+- Lucide React (icons)
 
 ## Setup
 1. Clone the repository
 2. Install backend dependencies:
 ```bash
 cd backend
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 3. Install frontend dependencies:
@@ -45,6 +48,7 @@ Create a .env file in the backend directory with:
 ```plaintext
 OPENAI_API_KEY=your_api_key_here
 ```
+
 
 ## Running the application
 1. Start the backend server:
