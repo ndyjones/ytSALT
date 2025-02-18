@@ -93,7 +93,7 @@ export default function App() {
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-gray-900">
-            ytsALT - YouTube Content Optimizer
+            ytSALT - YouTube Content Optimizer
           </h1>
           <form onSubmit={handleSubmit} className="mt-8 max-w-xl mx-auto">
             <div className="flex gap-4">

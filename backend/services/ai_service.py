@@ -5,12 +5,67 @@ import os
 from dotenv import load_dotenv
 import re
 from datetime import datetime
+import base64
+import requests
+from PIL import Image  # for thumbnail processing
+import io
+from io import BytesIO
 
 load_dotenv()
 
 class AIService:
     def __init__(self):
         self.client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+
+    def _determine_content_type(self, video_data: Dict) -> str:
+        """
+        Analyze video metadata to determine the content type
+        """
+        try:
+            title = video_data.get('title', '').lower()
+            description = video_data.get('description', '').lower()
+            tags = [tag.lower() for tag in video_data.get('tags', [])]
+            
+            # Define content type indicators
+            content_types = {
+                'tutorial': ['how to', 'tutorial', 'guide', 'learn', 'step by step'],
+                'review': ['review', 'hands on', 'unboxing', 'testing'],
+                'vlog': ['vlog', 'day in', 'daily', 'life'],
+                'entertainment': ['fun', 'funny', 'comedy', 'prank', 'challenge'],
+                'gaming': ['gameplay', 'playthrough', 'gaming', 'game'],
+                'educational': ['explained', 'understanding', 'education', 'learn'],
+                'news': ['news', 'update', 'latest', 'breaking'],
+                'commentary': ['reaction', 'thoughts on', 'discussing', 'opinion']
+            }
+            
+            # Check content against indicators
+            content_scores = {ctype: 0 for ctype in content_types}
+            
+            for ctype, indicators in content_types.items():
+                # Check title
+                if any(indicator in title for indicator in indicators):
+                    content_scores[ctype] += 2
+                
+                # Check description
+                if any(indicator in description for indicator in indicators):
+                    content_scores[ctype] += 1
+                    
+                # Check tags
+                if any(indicator in ' '.join(tags) for indicator in indicators):
+                    content_scores[ctype] += 1
+            
+            # Get the content type with highest score
+            max_score = max(content_scores.values())
+            if max_score > 0:
+                content_type = max(content_scores.items(), key=lambda x: x[1])[0]
+            else:
+                content_type = 'general'
+                
+            return content_type.capitalize()
+            
+        except Exception as e:
+            print(f"Error determining content type: {str(e)}")
+            return 'General'
 
     def optimize_title(self, video_data: Dict) -> Dict:
         """
@@ -344,23 +399,21 @@ class AIService:
             # Input validation
             if not isinstance(video_data, dict):
                 raise ValueError("Invalid video data format")
-
             # Debug logging
             print(f"Received video data with keys: {video_data.keys()}")
-
+            
             # Extract existing keywords from current tags and description
             existing_keywords = set()
             if video_data.get('tags'):
                 existing_keywords.update([tag.lower() for tag in video_data['tags']])
             if video_data.get('description'):
                 # Extract meaningful words from description (excluding common words)
-                desc_words = set(word.lower() for word in video_data['description'].split() 
+                desc_words = set(word.lower() for word in video_data['description'].split()
                                if len(word) > 3 and word.isalnum())
                 existing_keywords.update(desc_words)
-
+            
             # Create prompt with transcript data
             prompt = self._create_tag_optimization_prompt(video_data, existing_keywords)
-
             response = self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[
@@ -378,12 +431,12 @@ class AIService:
                 temperature=0.7,
                 max_tokens=500
             )
-
+            
             suggestions = self._parse_tag_suggestions(
                 response.choices[0].message.content,
                 existing_keywords
             )
-
+            
             return {
                 "success": True,
                 "suggestions": suggestions,
@@ -468,6 +521,9 @@ class AIService:
                     current_tag['metrics'] = self._analyze_tag_metrics(current_tag['tag'])
             
             if current_tag:
+                # Make sure the last tag has metrics if it wasn't added
+                if 'metrics' not in current_tag and 'tag' in current_tag:
+                    current_tag['metrics'] = self._analyze_tag_metrics(current_tag['tag'])
                 suggestions.append(current_tag)
             
             # Sort suggestions to prioritize new tags from transcript
@@ -492,3 +548,439 @@ class AIService:
             'has_numbers': any(char.isdigit() for char in tag),
             'is_recommended_length': 10 <= len(tag) <= 30
         }
+
+    def optimize_thumbnail(self, video_data: Dict) -> Dict:
+        """
+        Generate thumbnail optimization suggestions based on video content type, metadata, and current thumbnail
+        """
+        try:
+            # Debug print
+            # print("Video data:", video_data)
+            
+            content_type = self._determine_content_type(video_data)
+            title = video_data.get('title', '')
+            thumbnail_url = video_data.get('thumbnail_url', '')
+
+            if not thumbnail_url:
+                raise ValueError("No thumbnail URL provided")
+
+            # Download the image from the URL
+            response = requests.get(thumbnail_url)
+            if response.status_code != 200:
+                raise ValueError(f"Failed to download thumbnail image: {response.status_code}")
+
+            # Convert WebP to JPEG
+            image = Image.open(io.BytesIO(response.content))
+            
+            # Convert to RGB if necessary (in case of RGBA WebP)
+            if image.mode in ('RGBA', 'LA'):
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                background.paste(image, mask=image.split()[-1])
+                image = background
+            elif image.mode != 'RGB':
+                image = image.convert('RGB')
+
+            # Save as JPEG in memory
+            jpeg_buffer = io.BytesIO()
+            image.save(jpeg_buffer, format='JPEG', quality=95)
+            jpeg_buffer.seek(0)
+            
+            # Encode the JPEG image
+            encoded_image = base64.b64encode(jpeg_buffer.getvalue()).decode('utf-8')
+
+            prompt = f"""
+            Analyze this YouTube video thumbnail and provide specific optimization recommendations.
+            
+            Video Context:
+            Title: {title}
+            Content Type: {content_type}
+            Description: {video_data.get('description', '')}
+
+            Please provide detailed recommendations for:
+
+            1. Visual Analysis:
+            - Current thumbnail strengths and weaknesses
+            - Main focal points and their effectiveness
+            - Image composition and layout
+            - Visual hierarchy
+
+            2. Improvement Recommendations:
+            - Text overlay suggestions (placement, style, size)
+            - Color scheme optimization
+            - Composition adjustments
+            - Attention-grabbing elements
+            - CTR optimization tips
+
+            3. Technical Specifications:
+            - Resolution and quality assessment
+            - Safe zone compliance
+            - Mobile viewing optimization
+            - Platform-specific considerations
+            """
+
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{encoded_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=1000
+            )
+
+            parsed_recommendations = self._parse_thumbnail_recommendations(
+                response.choices[0].message.content
+            )
+
+            return {
+                "success": True,
+                "thumbnail_recommendations": parsed_recommendations,
+                "content_type": content_type,
+                "current_thumbnail_url": thumbnail_url
+            }
+        except Exception as e:
+            print(f"Error in thumbnail optimization: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Error: {str(e)}"
+            }
+
+    def _download_and_encode_image(self, image_url: str) -> str:
+        """
+        Download image from URL and return base64 encoded string
+        """
+        try:
+            response = requests.get(image_url)
+            response.raise_for_status()
+            return base64.b64encode(response.content).decode('utf-8')
+        except Exception as e:
+            raise ValueError(f"Failed to process image: {str(e)}")
+
+    def _parse_thumbnail_recommendations(self, response_text: str) -> Dict:
+        """
+        Parse the thumbnail optimization response into structured recommendations
+        """
+        try:
+            recommendations = {
+                'current_analysis': [],
+                'visual_elements': [],
+                'text_overlay': [],
+                'color_scheme': [],
+                'composition': [],
+                'technical_specs': [],
+                'additional_recommendations': []
+            }
+
+            current_section = None
+            lines = response_text.split('\n')
+            
+            section_mapping = {
+                'current thumbnail analysis': 'current_analysis',
+                'visual elements': 'visual_elements',
+                'text overlay': 'text_overlay',
+                'color scheme': 'color_scheme',
+                'composition': 'composition',
+                'technical specs': 'technical_specs',
+                'additional recommendations': 'additional_recommendations'
+            }
+
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Check for section headers
+                lower_line = line.lower()
+                for key, value in section_mapping.items():
+                    if key in lower_line:
+                        current_section = value
+                        break
+
+                # Add content to current section
+                if current_section and (line[0] in ['-', '•', '*'] or line[0].isdigit()):
+                    cleaned_line = re.sub(r'^[-•*\d]+\.?\s*', '', line).strip()
+                    if cleaned_line:
+                        recommendations[current_section].append(cleaned_line)
+
+            # Format the output
+            return {
+                key: '\n• ' + '\n• '.join(value) if value else 'No specific recommendations'
+                for key, value in recommendations.items()
+            }
+        except Exception as e:
+            print(f"Error parsing thumbnail recommendations: {str(e)}")
+            return {
+                'error': f"Failed to parse recommendations: {str(e)}"
+            }
+
+    def _parse_key_moments(self, response_text: str) -> List[Dict]:
+        """
+        Parse the key moments response into structured data
+        """
+        try:
+            moments = []
+            current_moment = None
+            lines = response_text.split('\n')
+            timestamp = 0
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                # Check for new moment indicators (numbered points)
+                if re.match(r'^\d+[\.\)]', line):
+                    # Save previous moment if exists
+                    if current_moment:
+                        moments.append(current_moment)
+                        timestamp += 120  # Add 2 minutes for each section
+                    
+                    # Extract title (remove number and period/parenthesis)
+                    title = re.sub(r'^\d+[\.\)]\s*', '', line)
+                    
+                    current_moment = {
+                        'title': title,
+                        'time': timestamp,
+                        'type': 'topic_change',
+                        'description': ''
+                    }
+                # Add description to current moment
+                elif current_moment and not line.lower().startswith(('chapter', 'section', 'part')):
+                    if current_moment['description']:
+                        current_moment['description'] += ' ' + line
+                    else:
+                        current_moment['description'] = line
+            
+            # Add the last moment if exists
+            if current_moment:
+                moments.append(current_moment)
+            
+            return moments
+        except Exception as e:
+            print(f"Error parsing key moments: {str(e)}")
+            return []
+
+    def generate_thumbnail_optimization(self, video_data: Dict) -> Dict:
+        """
+        Generate comprehensive thumbnail optimization suggestions
+        """
+        try:
+            prompt = f"""
+            Based on this video content:
+            Title: {video_data.get('title')}
+            Description: {video_data.get('description')}
+            
+            Provide specific thumbnail recommendations including:
+            1. Main visual elements to include
+            2. Text overlay suggestions
+            3. Color scheme recommendations
+            4. Composition tips
+            5. Emotional triggers to incorporate
+            
+            For each category, provide specific, actionable recommendations.
+            """
+            
+            response = self.client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a YouTube thumbnail optimization expert."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            parsed_elements = self._parse_thumbnail_elements(response.choices[0].message.content)
+            
+            return {
+                "success": True,
+                "thumbnail_suggestions": {
+                    "suggestions": response.choices[0].message.content,
+                    "elements": parsed_elements
+                }
+            }
+        except Exception as e:
+            print(f"Error generating thumbnail suggestions: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Failed to generate thumbnail suggestions: {str(e)}"
+            }
+
+    def generate_key_moments(self, video_data: Dict) -> Dict:
+        """
+        Generate concise chapter markers from transcript with SEO optimization
+        """
+        try:
+            transcript_text = video_data.get('transcript_data', {}).get('full_text', '')
+            if not transcript_text:
+                return {
+                    "success": False,
+                    "error": "No transcript data available for chapter generation"
+                }
+
+            prompt = f"""
+            Generate SEO-optimized chapter titles for this video transcript.
+            Format each chapter with its timestamp in this exact format:
+            [timestamp] [brief chapter title]
+
+            Critical Requirements:
+            1. Timing Rules:
+               - Must start with "0:00" for the first chapter
+               - Minimum 10 seconds between chapters (YouTube requirement)
+               - Space chapters logically throughout the video
+               - Use proper timestamp format (M:SS or MM:SS)
+
+            2. Title Format Rules:
+               - Keep titles extremely concise (2-5 words)
+               - Must be clear and descriptive
+               - Use action words when possible
+               - Make titles scannable
+               - Capitalize key words
+
+            3. SEO Optimization:
+               - Use search-friendly keywords
+               - Match user search intent
+               - Include relevant topic terms
+               - Maintain natural language flow
+               - Consider common search phrases
+
+            4. Structure Requirements:
+               - Include introduction chapter
+               - Break into clear content segments
+               - Mark major transitions
+               - Note key demonstrations or examples
+               - Include conclusion/summary if applicable
+
+            Example Format:
+            0:00 Introduction
+            0:45 Project Overview
+            2:15 Main Demonstration
+            5:30 Key Results
+            8:45 Final Tips
+
+            Current Video Context:
+            Title: {video_data.get('title', '')}
+            Description: {video_data.get('description', '')}
+
+            Generate chapters based on this transcript:
+            {transcript_text[:2000]}...
+            """
+
+            response = self.client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """You are an expert at creating YouTube chapters that maximize SEO and user engagement.
+                        Focus on creating chapters that:
+                        1. Help viewers navigate the content effectively
+                        2. Improve search visibility
+                        3. Maintain professional formatting
+                        4. Use strategic keywords"""
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=500
+            )
+
+            chapters = self._parse_chapters(response.choices[0].message.content)
+            
+            # Validate chapter timing
+            validated_chapters = self._validate_chapters(chapters)
+            
+            return {
+                "success": True,
+                "key_moments": validated_chapters
+            }
+        except Exception as e:
+            print(f"Error generating chapters: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Failed to generate chapters: {str(e)}"
+            }
+
+    def _validate_chapters(self, chapters: List[Dict]) -> List[Dict]:
+        """
+        Validate chapters meet YouTube requirements
+        """
+        validated_chapters = []
+        previous_time = -10  # Initialize to ensure first chapter can be 0:00
+        
+        for chapter in chapters:
+            current_time = chapter['time']
+            
+            # Ensure minimum 10-second gap between chapters
+            if (current_time - previous_time) >= 10:
+                validated_chapters.append(chapter)
+                previous_time = current_time
+            else:
+                print(f"Skipping chapter at {chapter['timestamp']} due to insufficient time gap")
+        
+        # Ensure first chapter starts at 0:00
+        if validated_chapters and validated_chapters[0]['time'] != 0:
+            print("Adding 0:00 Introduction chapter")
+            validated_chapters.insert(0, {
+                'time': 0,
+                'timestamp': '0:00',
+                'title': 'Introduction',
+                'type': 'chapter'
+            })
+        
+        return validated_chapters
+
+    def _parse_chapters(self, response_text: str) -> List[Dict]:
+        """
+        Parse chapter markers from response with enhanced validation
+        """
+        chapters = []
+        lines = response_text.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Look for timestamp pattern (M:SS or MM:SS)
+            match = re.match(r'(\d{1,2}:\d{2})\s+(.*)', line)
+            if match:
+                timestamp, title = match.groups()
+                
+                # Convert timestamp to seconds for sorting
+                minutes, seconds = map(int, timestamp.split(':'))
+                time_in_seconds = minutes * 60 + seconds
+                
+                # Basic title validation
+                title = title.strip()
+                words = title.split()
+                if len(words) > 4:  # If title too long, truncate to 4 words
+                    title = ' '.join(words[:4])
+                
+                # Capitalize key words
+                title = ' '.join(word.capitalize() if len(word) > 3 else word 
+                               for word in title.split())
+                
+                chapters.append({
+                    'time': time_in_seconds,
+                    'timestamp': timestamp,
+                    'title': title,
+                    'type': 'chapter'
+                })
+        
+        # Sort chapters by time
+        chapters.sort(key=lambda x: x['time'])
+        
+        return chapters
